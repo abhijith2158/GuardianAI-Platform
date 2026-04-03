@@ -488,7 +488,7 @@ def dashboard(api_key: str | None = Query(default=None)) -> str:
     }
 
     refresh();
-    setInterval(refresh, 2000);
+    setInterval(refresh, 10000);
   </script>
 </body>
 </html>
