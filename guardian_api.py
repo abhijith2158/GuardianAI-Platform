@@ -3,6 +3,7 @@
 import json
 import os
 import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -12,11 +13,17 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 import psycopg2
 from psycopg2.extras import Json, RealDictCursor
+from psycopg2.pool import SimpleConnectionPool
 
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 EXPECTED_API_KEY = os.getenv("GUARDIAN_API_KEY", "guardian-dev-key")
 _db_lock = threading.Lock()
+_db_pool: SimpleConnectionPool | None = None
+POOL_MIN_CONN = int(os.getenv("GUARDIAN_DB_POOL_MIN", "1"))
+POOL_MAX_CONN = int(os.getenv("GUARDIAN_DB_POOL_MAX", "5"))
+DB_RETRY_ATTEMPTS = int(os.getenv("GUARDIAN_DB_RETRY_ATTEMPTS", "3"))
+DB_RETRY_DELAY_SECONDS = int(os.getenv("GUARDIAN_DB_RETRY_DELAY_SECONDS", "2"))
 
 DEFAULT_POLICY = {
     "mode": os.getenv("GUARDIAN_POLICY_MODE", "block"),
@@ -50,23 +57,78 @@ class PolicyPayload(BaseModel):
     severity_threshold: int = 7
 
 
+class DatabaseUnavailableError(RuntimeError):
+    pass
+
+
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _ensure_db() -> None:
+def _init_db_pool() -> None:
+    global _db_pool
+
     if not DATABASE_URL:
         print("Database connection/init failed: DATABASE_URL must be set for guardian_api.py")
         return
 
     print(f"Connecting to: {DATABASE_URL[:20]}...")
 
+    last_error: Exception | None = None
+    for attempt in range(1, DB_RETRY_ATTEMPTS + 1):
+        try:
+            with _db_lock:
+                if _db_pool is None:
+                    _db_pool = SimpleConnectionPool(
+                        POOL_MIN_CONN,
+                        POOL_MAX_CONN,
+                        DATABASE_URL,
+                    )
+            print(f"Database pool initialized on attempt {attempt}.")
+            return
+        except Exception as exc:
+            last_error = exc
+            print(f"Database pool init attempt {attempt} failed: {exc}")
+            if attempt < DB_RETRY_ATTEMPTS:
+                time.sleep(DB_RETRY_DELAY_SECONDS)
+
+    print(f"Database connection/init failed after {DB_RETRY_ATTEMPTS} attempts: {last_error}")
+
+
+def _get_pooled_connection():
+    if _db_pool is None:
+        raise DatabaseUnavailableError("database pool is unavailable")
+
+    last_error: Exception | None = None
+    for attempt in range(1, DB_RETRY_ATTEMPTS + 1):
+        try:
+            return _db_pool.getconn()
+        except Exception as exc:
+            last_error = exc
+            print(f"Database connection acquisition attempt {attempt} failed: {exc}")
+            if attempt < DB_RETRY_ATTEMPTS:
+                time.sleep(DB_RETRY_DELAY_SECONDS)
+
+    raise DatabaseUnavailableError(
+        f"database unavailable after {DB_RETRY_ATTEMPTS} attempts: {last_error}"
+    )
+
+
+def _release_pooled_connection(conn) -> None:
+    if conn is None or _db_pool is None:
+        return
+    try:
+        _db_pool.putconn(conn)
+    except Exception as exc:
+        print(f"Database connection release failed: {exc}")
+
+
+def _ensure_db() -> None:
     conn = None
     try:
-        with _db_lock:
-            conn = psycopg2.connect(DATABASE_URL)
-            with conn.cursor() as cur:
-                cur.execute(
+        conn = _get_pooled_connection()
+        with conn.cursor() as cur:
+            cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS telemetry_events (
                     id BIGSERIAL PRIMARY KEY,
@@ -79,42 +141,37 @@ def _ensure_db() -> None:
                     created_at TIMESTAMPTZ NOT NULL
                 )
                 """
-                )
-                cur.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_telemetry_events_created_at
-                    ON telemetry_events (created_at DESC)
-                    """
-                )
-                cur.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_telemetry_events_service
-                    ON telemetry_events (service)
-                    """
-                )
-                cur.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_telemetry_events_verdict
-                    ON telemetry_events (verdict)
-                    """
-                )
-                conn.commit()
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_telemetry_events_created_at
+                ON telemetry_events (created_at DESC)
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_telemetry_events_service
+                ON telemetry_events (service)
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_telemetry_events_verdict
+                ON telemetry_events (verdict)
+                """
+            )
+        conn.commit()
     except Exception as exc:
-        print(f"Database connection/init failed: {exc}")
-        return
+        print(f"Database schema init failed: {exc}")
+        raise DatabaseUnavailableError(str(exc)) from exc
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        _release_pooled_connection(conn)
 
 
 def _store_event(payload: TelemetryPayload) -> None:
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL must be set for guardian_api.py")
-
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = None
     try:
+        conn = _get_pooled_connection()
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -132,17 +189,22 @@ def _store_event(payload: TelemetryPayload) -> None:
                 ),
             )
         conn.commit()
+    except Exception as exc:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise DatabaseUnavailableError(str(exc)) from exc
     finally:
-        conn.close()
+        _release_pooled_connection(conn)
 
 
 def _read_events(limit: int = 50) -> list[dict[str, Any]]:
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL must be set for guardian_api.py")
-
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    conn = None
     try:
-        with conn.cursor() as cur:
+        conn = _get_pooled_connection()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
                 SELECT id, ts, service, env, event_type, verdict, payload, created_at
@@ -153,8 +215,10 @@ def _read_events(limit: int = 50) -> list[dict[str, Any]]:
                 (limit,),
             )
             rows = cur.fetchall()
+    except Exception as exc:
+        raise DatabaseUnavailableError(str(exc)) from exc
     finally:
-        conn.close()
+        _release_pooled_connection(conn)
 
     events: list[dict[str, Any]] = []
     for row in rows:
@@ -183,12 +247,24 @@ def _resolve_policy(service_name: str | None) -> PolicyPayload:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 1. Startup Logic: Ensure DB exists
-    _ensure_db()
-    print("GuardianAI Command Center Active | PostgreSQL ready")
+    _init_db_pool()
+    try:
+        _ensure_db()
+        print("GuardianAI Command Center Active | PostgreSQL ready")
+    except DatabaseUnavailableError as exc:
+        print(f"GuardianAI starting without database connectivity: {exc}")
     
     yield # The app runs while this is suspended
     
     # 2. Shutdown Logic (Optional): Close connections if needed
+    global _db_pool
+    if _db_pool is not None:
+        try:
+            _db_pool.closeall()
+        except Exception as exc:
+            print(f"Database pool shutdown failed: {exc}")
+        finally:
+            _db_pool = None
     print("Stopping GuardianAI Ingestor...")
 
 app = FastAPI(title="GuardianAI Ingestor", version="1.1.0", lifespan=lifespan)
@@ -196,7 +272,7 @@ app = FastAPI(title="GuardianAI Ingestor", version="1.1.0", lifespan=lifespan)
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "database": "connected" if _db_pool is not None else "unavailable"}
 
 
 @app.get("/v1/policy")
@@ -216,7 +292,10 @@ def list_events(
 ) -> list[dict[str, Any]]:
     if x_api_key != EXPECTED_API_KEY:
         raise HTTPException(status_code=401, detail="invalid api key")
-    return _read_events(limit=limit)
+    try:
+        return _read_events(limit=limit)
+    except DatabaseUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
 
 @app.post("/v1/telemetry")
@@ -227,7 +306,10 @@ def ingest_telemetry(
     if x_api_key != EXPECTED_API_KEY:
         raise HTTPException(status_code=401, detail="invalid api key")
 
-    _store_event(payload)
+    try:
+        _store_event(payload)
+    except DatabaseUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=f"database unavailable: {exc}") from exc
 
     if (payload.verdict or "").upper() == "BLOCKED":
         print(
