@@ -1,0 +1,36 @@
+# Secrets
+.env
+.env.*
+
+# Python caches and build metadata
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Node dependencies
+node_modules/
+venv/
+
+# Local databases
+guardian_events*.db
+guardian_events*.sqlite
+guardian_events*.sqlite3
+
+# Local logs and transient outputs
+*.log
+*.out
+*.err
+debug_output.txt
+pytest_output.txt
+scan_out.txt
+reports/
+guardian-sdk-node/out.txt
+guardian-sdk-node/results.txt
+guardian-sdk-node/test_output.txt
+guardian-core/AI-Security-Project/alerts_history.csv
+guardian-core/AI-Security-Project/.streamlit/
+
+# Temporary test helpers
+tmp_*.js
+tmp_*.py

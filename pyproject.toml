@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "guardian-sdk-python"
+version = "1.0.0"
+description = "GuardianAI SDK (RASP) + telemetry emitter (scaffold)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "GuardianAI" }]
+dependencies = ["flask", "requests", "psycopg2-binary", "fastapi", "uvicorn"]
+
+[project.scripts]
+guardian-cli-py = "guardian_sdk.cli:main"
+
+[tool.setuptools]
+packages = ["guardian_sdk"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

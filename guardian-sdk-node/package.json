@@ -1,0 +1,17 @@
+{
+  "name": "@ark/guardian-sdk",
+  "version": "1.0.0",
+  "description": "Node.js SDK for GuardianAI RASP telemetry",
+  "main": "src/index.js",
+  "bin": {
+    "guardian-cli": "bin/cli.js"
+  },
+  "scripts": {
+    "test": "jest"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "express": "^4.19.2",
+    "jest": "^29.7.0"
+  }
+}
