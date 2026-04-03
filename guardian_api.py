@@ -58,9 +58,11 @@ def _ensure_db() -> None:
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL must be set for guardian_api.py")
 
+    print(f"Connecting to: {DATABASE_URL[:20]}...")
+
     with _db_lock:
-        conn = psycopg2.connect(DATABASE_URL)
         try:
+            conn = psycopg2.connect(DATABASE_URL)
             with conn.cursor() as cur:
                 cur.execute(
                 """
@@ -95,8 +97,14 @@ def _ensure_db() -> None:
                     """
                 )
             conn.commit()
+        except Exception as exc:
+            print(f"Database connection/init failed: {exc}")
+            raise
         finally:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _store_event(payload: TelemetryPayload) -> None:
