@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "GuardianAI" }]
-dependencies = ["flask", "requests", "psycopg2-binary", "fastapi", "uvicorn"]
+dependencies = ["flask", "requests", "psycopg2-binary", "fastapi", "uvicorn", "PyYAML"]
 
 [project.scripts]
 guardian-cli-py = "guardian_sdk.cli:main"

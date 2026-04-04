@@ -19,7 +19,7 @@ jobs:
           python-version: '3.10'
           
       - name: Run GuardianAI CI Audit
-        run: python advisor.py . --ci
+        run: python security_audit.py . --ci
         
       - name: Upload Security Roadmap
         if: always()

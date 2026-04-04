@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from guardian_sdk import enable
+from guardian_sdk.config import GuardianConfig
 from guardian_sdk.monitor import GuardianBlocked
 
 
@@ -38,3 +39,19 @@ def test_block_mode_blocks_sqli_and_logs_blocked_verdict():
     contents = log_path.read_text(encoding="utf-8")
     assert "verdict=BLOCKED" in contents
     assert "category=sql_injection" in contents
+
+
+def test_ingest_url_is_normalized_from_env(monkeypatch):
+    monkeypatch.setenv("GUARDIAN_INGEST_URL", "http://127.0.0.1:8000/")
+
+    cfg = GuardianConfig.from_env()
+
+    assert cfg.ingest_url == "http://127.0.0.1:8000/v1/telemetry"
+
+
+def test_ingest_url_keeps_full_telemetry_endpoint(monkeypatch):
+    monkeypatch.setenv("GUARDIAN_INGEST_URL", "http://127.0.0.1:8000/v1/telemetry/")
+
+    cfg = GuardianConfig.from_env()
+
+    assert cfg.ingest_url == "http://127.0.0.1:8000/v1/telemetry"

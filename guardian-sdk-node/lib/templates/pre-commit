@@ -1,7 +1,7 @@
 #!/bin/sh
 echo 'Running GuardianAI Security Audit...'
-python advisor.py . --ci
+python security_audit.py . --ci
 if [ $? -ne 0 ]; then
-    echo 'COMMIT BLOCKED: Critical vulnerabilities found. Check /reports.'
+    echo 'COMMIT BLOCKED: Critical vulnerabilities found. Check /reports. Use git commit --no-verify only for local testing.'
     exit 1
 fi
